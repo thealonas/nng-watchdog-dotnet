@@ -2,7 +2,6 @@
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
-using nng.Exceptions;
 using nng.VkFrameworks;
 using VkNet.Abstractions;
 using VkNet.Enums.SafetyEnums;
@@ -57,12 +56,12 @@ public class VkProcessor
 
     public void DeletePhoto(ulong photoId, ulong ownerId)
     {
-        _vkFramework.SetSecondsToWait(15);
+        VkFramework.CaptchaSecondsToWait = 15;
         try
         {
             _vkFramework.DeletePhoto(photoId, ownerId);
         }
-        catch (VkFrameworkMethodException e)
+        catch (VkApiException e)
         {
             _logger.LogError("{Type}: {Message}", e.GetType(), e.Message);
         }
@@ -70,13 +69,13 @@ public class VkProcessor
 
     public bool FireEditor(long groupId, long userId)
     {
-        _vkFramework.SetSecondsToWait(3600);
+        VkFramework.CaptchaSecondsToWait = 3600;
         try
         {
             _vkFramework.EditManager(userId, groupId, null);
             return true;
         }
-        catch (VkFrameworkMethodException e)
+        catch (VkApiException e)
         {
             _logger.LogError("{Message}", e.Message);
             return false;
@@ -85,13 +84,13 @@ public class VkProcessor
 
     public bool Block(long groupId, long userId, string comment)
     {
-        _vkFramework.SetSecondsToWait(15);
+        VkFramework.CaptchaSecondsToWait = 15;
         try
         {
             _vkFramework.Block(groupId, userId, comment);
             return true;
         }
-        catch (VkFrameworkMethodException e)
+        catch (VkApiException e)
         {
             _logger.LogError("{Type}: {Message}", e.GetType(), e.Message);
             return false;
@@ -118,7 +117,7 @@ public class VkProcessor
         {
             _vkFramework.DeletePost(groupId, post);
         }
-        catch (VkFrameworkMethodException e)
+        catch (VkApiException e)
         {
             _logger.LogError("Не удалось удалить пост {Post}: {Exception}", post, e.Message);
         }

@@ -6,6 +6,7 @@ using nng.Exceptions;
 using nng.VkFrameworks;
 using VkNet.Abstractions;
 using VkNet.Enums;
+using VkNet.Exception;
 
 namespace nng_watchdog.API;
 
@@ -65,7 +66,7 @@ public class WatchDogApi
             _vkFramework.SetWall(group, state ? WallContentAccess.Restricted : WallContentAccess.Off);
             _logger.LogInformation("Стена группы {Group} изменена на {State}", group, state);
         }
-        catch (VkFrameworkMethodException e)
+        catch (VkApiException e)
         {
             _logger.LogError("Не удалось изменить стену группы {Group}, {Response}", group,
                 $"{e.GetType()}: {e.Message}");
