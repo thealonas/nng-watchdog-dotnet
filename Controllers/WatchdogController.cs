@@ -65,7 +65,19 @@ public class WatchdogController : ControllerBase
         _logger.LogInformation("Получили ивент от VK");
         _logger.LogInformation("Сообщество: {Group}\n\tТип: {Type}",
             vkEvent.GroupId, vkEvent.Type);
-        var secret = Configuration[$"{vkEvent.GroupId}:Secret"];
+
+        string? secret;
+        try
+        {
+            secret = Configuration[$"{vkEvent.GroupId}:Secret"];
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning("Не удалось найти заявленное сообщество ({Group})\n{Exception}",
+                vkEvent.GroupId, $"{e.GetType()}: {e.Message}");
+            return Ok("ok");
+        }
+
         if (vkEvent.Secret != secret)
         {
             _logger.LogWarning("У запроса с типом {Type} неправильный secret ({ActualSecret})", vkEvent.Type,
