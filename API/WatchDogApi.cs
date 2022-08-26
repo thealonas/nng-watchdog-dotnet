@@ -1,12 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using nng.Constants;
 using nng.Exceptions;
+using nng.Helpers;
 using nng.VkFrameworks;
+using Sentry;
 using VkNet.Abstractions;
 using VkNet.Enums;
-using VkNet.Exception;
 
 namespace nng_watchdog.API;
 
@@ -18,21 +19,21 @@ public class WatchDogApi
     private readonly VkFramework _vkFramework;
     private readonly VkFrameworkHttp _vkFrameworkHttp;
 
-    public WatchDogApi(ILogger<WatchDogApi> logger, IConfiguration configuration,
-        IVkApi vkApi, VkFrameworkHttp vkFrameworkHttp, VkFramework vkFramework)
+    public WatchDogApi(ILogger<WatchDogApi> logger, IVkApi vkApi, VkFrameworkHttp vkFrameworkHttp,
+        VkFramework vkFramework)
     {
         _logger = logger;
         _vkFrameworkHttp = vkFrameworkHttp;
         _vkFramework = vkFramework;
 
-        var groupToken = configuration["Data:LogGroupToken"];
+        var groupToken = EnvironmentHelper.GetString(EnvironmentConstants.DialogGroupToken);
         if (groupToken == null)
             throw new ArgumentNullException(nameof(groupToken), "Не задан ключ для логирования в группу");
 
         var user = vkApi.UserId;
         if (user == null) throw new ArgumentNullException(nameof(user), "Не удалось подключиться к VK API");
 
-        Owner = configuration.GetValue<long>("Data:LogUser");
+        Owner = EnvironmentHelper.GetLong(EnvironmentConstants.LogUser);
 
         logger.LogInformation("Авторизация от имени @id{Id}", user);
         logger.LogInformation("Логгирование будет происходить в @id{Id}", user);
@@ -53,6 +54,7 @@ public class WatchDogApi
         }
         catch (VkFrameworkMethodException e)
         {
+            SentrySdk.CaptureException(e);
             _logger.LogError("Не удалось отправить сообщение: {Message}\n{Exception}", message,
                 $"{e.GetType()}: {e.Message}");
         }
@@ -61,17 +63,8 @@ public class WatchDogApi
     public void ChangeWall(long group, bool state)
     {
         SetGroupProcessingStatus(group, true);
-        try
-        {
-            _vkFramework.SetWall(group, state ? WallContentAccess.Restricted : WallContentAccess.Off);
-            _logger.LogInformation("Стена группы {Group} изменена на {State}", group, state);
-        }
-        catch (VkApiException e)
-        {
-            _logger.LogError("Не удалось изменить стену группы {Group}, {Response}", group,
-                $"{e.GetType()}: {e.Message}");
-        }
-
+        _vkFramework.SetWall(group, state ? WallContentAccess.Restricted : WallContentAccess.Off);
+        _logger.LogInformation("Стена группы {Group} изменена на {State}", group, state);
         SetGroupProcessingStatus(group, false);
     }
 

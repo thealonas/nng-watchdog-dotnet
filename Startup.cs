@@ -2,10 +2,11 @@ using System.Collections.Generic;
 using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using nng.VkFrameworks;
 using nng_watchdog.API;
+using nng.Constants;
+using nng.Helpers;
+using nng.VkFrameworks;
 using VkNet;
 using VkNet.Abstractions;
 using VkNet.Model;
@@ -14,13 +15,6 @@ namespace nng_watchdog;
 
 public class Startup
 {
-    public Startup(IConfiguration configuration)
-    {
-        Configuration = configuration;
-    }
-
-    private IConfiguration Configuration { get; }
-
     public void ConfigureServices(IServiceCollection services)
     {
         services.AddMvc(options => options.EnableEndpointRouting = false);
@@ -29,15 +23,16 @@ public class Startup
         services.AddSingleton<IVkApi>(_ =>
         {
             var api = new VkApi();
-            api.Authorize(new ApiAuthParams {AccessToken = Configuration.GetSection("Data:Token").Value});
+            api.Authorize(new ApiAuthParams
+                {AccessToken = EnvironmentHelper.GetString(EnvironmentConstants.UserToken)});
             api.RequestsPerSecond = 1;
             api.UserId = api.Users.Get(new List<long>()).First().Id;
             return api;
         });
-        services.AddSingleton(_ => new VkFramework(Configuration.GetSection("Data:Token").Value));
-        services.AddSingleton(_ => new VkFrameworkHttp(Configuration.GetSection("Data:LogGroupToken").Value));
+        services.AddSingleton(_ => new VkFramework(EnvironmentHelper.GetString(EnvironmentConstants.UserToken)));
+        services.AddSingleton(_ =>
+            new VkFrameworkHttp(EnvironmentHelper.GetString(EnvironmentConstants.DialogGroupToken)));
         services.AddSingleton<WatchDogApi>();
-        services.AddSingleton<PhraseProcessor>();
         services.AddHttpClient();
     }
 

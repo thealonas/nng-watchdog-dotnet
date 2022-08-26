@@ -1,11 +1,11 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
-using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using nng.VkFrameworks;
 using VkNet.Abstractions;
 using VkNet.Enums.SafetyEnums;
-using VkNet.Exception;
+using VkNet.Model.Attachments;
 using VkNet.Model.RequestParams;
 
 namespace nng_watchdog.API;
@@ -26,82 +26,47 @@ public class VkProcessor
         _api = api;
         _watchDogApi = watchDogApi;
         _vkFramework = vkFramework;
-        _logger.LogInformation("Фреймворк для работы с пользователями инициализирован");
     }
 
 
-    public async Task<ManagerRole?> GetUserPermissionsAsync(long groupId, long userId)
+    public ManagerRole? GetUserPermissions(long groupId, long userId)
     {
-        while (true)
-            try
+        return VkFrameworkExecution.ExecuteWithReturn(() =>
+        {
+            var managers = _api.Groups.GetMembers(new GroupsGetMembersParams
             {
-                var managers = await _api.Groups.GetMembersAsync(new GroupsGetMembersParams
-                {
-                    GroupId = groupId.ToString(),
-                    Filter = GroupsMemberFilters.Managers
-                });
-                return managers.FirstOrDefault(user => user.Id == userId)?.Role;
-            }
-            catch (TooManyRequestsException)
-            {
-                _logger.LogDebug("Слишком частые запросы");
-                await Task.Delay(3000);
-            }
-            catch (Exception e)
-            {
-                _logger.LogError("{Type}: {Message}", e.GetType(), e.Message);
-                return null;
-            }
+                GroupId = groupId.ToString(),
+                Filter = GroupsMemberFilters.Managers
+            });
+            return managers.FirstOrDefault(user => user.Id == userId)?.Role;
+        });
     }
 
-    public void DeletePhoto(ulong photoId, ulong ownerId)
+    public void DeletePhoto(ulong photoId, long ownerId)
     {
         VkFramework.CaptchaSecondsToWait = 15;
-        try
-        {
-            _vkFramework.DeletePhoto(photoId, ownerId);
-        }
-        catch (VkApiException e)
-        {
-            _logger.LogError("{Type}: {Message}", e.GetType(), e.Message);
-        }
+        VkFrameworkExecution.Execute(() => { _vkFramework.Api.Photo.Delete(photoId, ownerId); });
     }
 
-    public bool FireEditor(long groupId, long userId)
+    public bool TryFireEditor(long groupId, long userId)
     {
         VkFramework.CaptchaSecondsToWait = 3600;
-        try
-        {
-            _vkFramework.EditManager(userId, groupId, null);
-            return true;
-        }
-        catch (VkApiException e)
-        {
-            _logger.LogError("{Message}", e.Message);
-            return false;
-        }
+        _vkFramework.EditManager(userId, groupId, null);
+        return true;
     }
 
     public bool Block(long groupId, long userId, string comment)
     {
         VkFramework.CaptchaSecondsToWait = 15;
-        try
-        {
-            _vkFramework.Block(groupId, userId, comment);
-            return true;
-        }
-        catch (VkApiException e)
-        {
-            _logger.LogError("{Type}: {Message}", e.GetType(), e.Message);
-            return false;
-        }
+        _vkFramework.Block(groupId, userId, comment);
+        return true;
     }
 
     public void WallProcessor(long groupId, bool state)
     {
         if (_watchDogApi.GroupAlreadyProcessing(groupId))
         {
-            _logger.LogInformation("В сообществе {Group} уже обрабатывается запрос на стену", groupId);
+            _logger.LogWarning("В сообществе {Group} уже обрабатывается запрос на стену", groupId);
             return;
         }
 
@@ -112,14 +77,33 @@ public class VkProcessor
     {
         if (postId == null) throw new ArgumentNullException(nameof(postId));
         var post = (long) postId;
+        _vkFramework.DeletePost(groupId, post);
+    }
 
-        try
+    public IEnumerable<Photo> GetPhotos(long owner, PhotoAlbumType type)
+    {
+        var photos = VkFrameworkExecution.ExecuteWithReturn(() => _vkFramework.Api.Photo.Get(new PhotoGetParams
         {
-            _vkFramework.DeletePost(groupId, post);
-        }
-        catch (VkApiException e)
-        {
-            _logger.LogError("Не удалось удалить пост {Post}: {Exception}", post, e.Message);
-        }
+            OwnerId = owner,
+            AlbumId = type,
+            Count = 1000
+        }));
+
+        if (photos.TotalCount <= 1000) return photos.ToList();
+
+        var divisor = (int) Math.Ceiling(photos.TotalCount / 1000f);
+
+        var output = photos.ToList();
+
+        for (var i = 1; i < divisor; i++)
+            output.AddRange(VkFrameworkExecution.ExecuteWithReturn(() => _vkFramework.Api.Photo.Get(new PhotoGetParams
+            {
+                OwnerId = owner,
+                AlbumId = type,
+                Count = 1000,
+                Offset = (ulong) (i * 1000)
+            })));
+
+        return output;
     }
 }
