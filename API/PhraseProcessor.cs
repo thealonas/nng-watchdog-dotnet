@@ -49,7 +49,7 @@ public static class PhraseProcessor
 
     public static string WallPostTemp(long group)
     {
-        return Phrases.WallPost
+        return Phrases.WallPostTemp
             .SetGroup(group.ToString());
     }
 
