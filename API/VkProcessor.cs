@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Extensions.Logging;
+using nng.Constants;
 using nng.VkFrameworks;
 using VkNet.Abstractions;
 using VkNet.Enums.SafetyEnums;
@@ -44,20 +45,20 @@ public class VkProcessor
 
     public void DeletePhoto(ulong photoId, long ownerId)
     {
-        VkFramework.CaptchaSecondsToWait = 15;
+        VkFramework.CaptchaSecondsToWait = Constants.CaptchaBlockWaitTime;
         VkFrameworkExecution.Execute(() => { _vkFramework.Api.Photo.Delete(photoId, ownerId); });
     }
 
     public bool TryFireEditor(long groupId, long userId)
     {
-        VkFramework.CaptchaSecondsToWait = 3600;
+        VkFramework.CaptchaSecondsToWait = Constants.CaptchaEditorWaitTime;
         _vkFramework.EditManager(userId, groupId, null);
         return true;
     }
 
     public bool Block(long groupId, long userId, string comment)
     {
-        VkFramework.CaptchaSecondsToWait = 15;
+        VkFramework.CaptchaSecondsToWait = Constants.CaptchaBlockWaitTime;
         _vkFramework.Block(groupId, userId, comment);
         return true;
     }

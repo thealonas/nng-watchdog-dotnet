@@ -50,7 +50,7 @@ public class WatchDogApi
     {
         try
         {
-            _vkFrameworkHttp.SendMessage(message, null, Owner);
+            _vkFrameworkHttp.SendMessage(message, null, Owner, true);
         }
         catch (VkFrameworkMethodException e)
         {
