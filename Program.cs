@@ -1,12 +1,8 @@
 using System;
-using System.IO;
 using System.Text;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using nng.Constants;
-using nng.Helpers;
 using Sentry;
 using Sentry.Extensibility;
 
@@ -22,20 +18,7 @@ public static class Program
 
     private static IHostBuilder CreateHostBuilder(string[] args)
     {
-        var configs = new[]
-        {
-            "groups.json"
-        };
-
         return Host.CreateDefaultBuilder(args)
-            .ConfigureAppConfiguration((_, configuration) =>
-            {
-                configuration.SetBasePath(Directory.GetCurrentDirectory());
-
-                foreach (var path in configs) configuration.AddJsonFile($"Configs/{path}", false, true);
-
-                configuration.AddEnvironmentVariables();
-            })
             .ConfigureLogging(logging =>
             {
                 logging.ClearProviders();
@@ -58,9 +41,7 @@ public static class Program
                     o.AttachStacktrace = true;
                     o.Debug = false;
                     o.DiagnosticLevel = SentryLevel.Error;
-
-                    var targetEnv = EnvironmentHelper.GetString(EnvironmentConstants.Sentry, "prod");
-                    o.Environment = targetEnv;
+                    o.Environment = "dev";
                 });
 
                 webBuilder.UseStartup<Startup>();

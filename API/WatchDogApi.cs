@@ -1,39 +1,36 @@
 ﻿using System;
-using System.Collections.Generic;
 using Microsoft.Extensions.Logging;
-using nng.Constants;
+using nng_watchdog.Providers;
+using nng.DatabaseProviders;
 using nng.Exceptions;
-using nng.Helpers;
+using nng.Extensions;
 using nng.VkFrameworks;
 using Sentry;
-using VkNet.Abstractions;
-using VkNet.Enums;
 
 namespace nng_watchdog.API;
 
 public class WatchDogApi
 {
-    private readonly Dictionary<long, bool> _alreadyProcessingGroups = new();
-
     private readonly ILogger<WatchDogApi> _logger;
-    private readonly VkFramework _vkFramework;
-    private readonly VkFrameworkHttp _vkFrameworkHttp;
+    private readonly VkFrameworkHttp _vk;
 
-    public WatchDogApi(ILogger<WatchDogApi> logger, IVkApi vkApi, VkFrameworkHttp vkFrameworkHttp,
-        VkFramework vkFramework)
+    public WatchDogApi(ILogger<WatchDogApi> logger, SettingsDatabaseProvider settingsDatabaseProvider,
+        WatchdogSettingsProvider watchDogDatabaseProvider)
     {
         _logger = logger;
-        _vkFrameworkHttp = vkFrameworkHttp;
-        _vkFramework = vkFramework;
 
-        var groupToken = EnvironmentHelper.GetString(EnvironmentConstants.DialogGroupToken);
-        if (groupToken == null)
-            throw new ArgumentNullException(nameof(groupToken), "Не задан ключ для логирования в группу");
+        if (!settingsDatabaseProvider.Collection.TryGetById("main", out var settings))
+            throw new ArgumentException(null, nameof(settingsDatabaseProvider));
 
-        var user = vkApi.UserId;
-        if (user == null) throw new ArgumentNullException(nameof(user), "Не удалось подключиться к VK API");
+        if (!watchDogDatabaseProvider.Collection.TryGetById("main", out var watchDogSettings))
+            throw new ArgumentException(null, nameof(watchDogDatabaseProvider));
 
-        Owner = EnvironmentHelper.GetLong(EnvironmentConstants.LogUser);
+        var groupToken = watchDogSettings.GroupToken;
+        _vk = new VkFrameworkHttp(groupToken);
+
+        var user = settings.LogUser;
+
+        Owner = settings.LogUser;
 
         logger.LogInformation("Авторизация от имени @id{Id}", user);
         logger.LogInformation("Логгирование будет происходить в @id{Id}", user);
@@ -41,16 +38,11 @@ public class WatchDogApi
 
     private long Owner { get; }
 
-    public bool GroupAlreadyProcessing(long group)
-    {
-        return _alreadyProcessingGroups.ContainsKey(group) && _alreadyProcessingGroups[group];
-    }
-
     public void SendMessage(string message)
     {
         try
         {
-            _vkFrameworkHttp.SendMessage(message, null, Owner, true);
+            _vk.SendMessage(message, null, Owner, true);
         }
         catch (VkFrameworkMethodException e)
         {
@@ -58,19 +50,5 @@ public class WatchDogApi
             _logger.LogError("Не удалось отправить сообщение: {Message}\n{Exception}", message,
                 $"{e.GetType()}: {e.Message}");
         }
-    }
-
-    public void ChangeWall(long group, bool state)
-    {
-        SetGroupProcessingStatus(group, true);
-        _vkFramework.SetWall(group, state ? WallContentAccess.Restricted : WallContentAccess.Off);
-        _logger.LogInformation("Стена группы {Group} изменена на {State}", group, state);
-        SetGroupProcessingStatus(group, false);
-    }
-
-    private void SetGroupProcessingStatus(long group, bool state)
-    {
-        if (!_alreadyProcessingGroups.ContainsKey(group)) _alreadyProcessingGroups.Add(group, state);
-        else _alreadyProcessingGroups[group] = state;
     }
 }

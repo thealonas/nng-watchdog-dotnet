@@ -2,14 +2,15 @@
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using nng_watchdog.API;
-using nng.Helpers;
+using nng_watchdog.Helpers;
+using nng_watchdog.Providers;
+using nng.DatabaseModels;
+using nng.DatabaseProviders;
+using nng.Enums;
+using nng.Extensions;
 using Sentry;
-using VkNet.Abstractions;
-using VkNet.Enums.SafetyEnums;
-using VkNet.Exception;
 using VkNet.Model.Attachments;
 using VkNet.Model.GroupUpdate;
 using VkNet.Utils;
@@ -17,58 +18,37 @@ using Event = nng_watchdog.Models.Event;
 
 namespace nng_watchdog.Controllers;
 
-[Route("")]
 [ApiController]
+[Route("")]
 public class WatchdogController : ControllerBase
 {
+    private readonly GroupSecretsProvider _groupSecrets;
     private readonly ILogger<WatchdogController> _logger;
+    private readonly PhotoHelper _photoHelper;
+    private readonly Settings _settings;
+    private readonly UsersHelper _usersHelper;
 
-    public WatchdogController(IVkApi vkApi, VkProcessor managerApi, WatchDogApi watchDogApi,
-        IConfiguration configuration, ILogger<WatchdogController> logger)
+    public WatchdogController(VkProvider provider, WatchDogApi watchDogApi,
+        ILogger<WatchdogController> logger, SettingsDatabaseProvider settings,
+        GroupSecretsProvider groupSecrets, PhotoHelper photoHelper, UsersHelper usersHelper)
     {
         _logger = logger;
+        _groupSecrets = groupSecrets;
+        _photoHelper = photoHelper;
+        _usersHelper = usersHelper;
 
-        Configuration = configuration;
-        VkApi = vkApi;
-        ManagerApi = managerApi;
+        ManagerApi = provider.VkProcessor;
         WatchDog = watchDogApi;
+
+        if (!settings.Collection.TryGetById("main", out var mainSettings))
+            throw new ArgumentException(null, nameof(settings));
+
+        _settings = mainSettings;
     }
-
-    private IConfiguration Configuration { get; }
-
-    private IVkApi VkApi { get; }
 
     private WatchDogApi WatchDog { get; }
 
     private VkProcessor ManagerApi { get; }
-
-    private bool OperationAllowed(long group, long user)
-    {
-        ManagerRole? perms;
-        try
-        {
-            perms = ManagerApi.GetUserPermissions(group, user);
-        }
-        catch (VkApiException e)
-        {
-            _logger.LogError("{Type}: {Message}", e.GetType(), e.Message);
-            perms = null;
-        }
-
-        _logger.LogDebug("Права пользователя {User} в сообществе {Group} — {Perms}",
-            user, group, perms?.ToString());
-        return perms == ManagerRole.Administrator || perms == ManagerRole.Creator;
-    }
-
-    private string FireEditorWithResponse(long group, long user)
-    {
-        var fireState = ManagerApi.TryFireEditor(group, user);
-        var banState = ManagerApi.Block(group, user, EnvironmentHelper.GetString("BanComment"));
-
-        return PhraseProcessor.FiredEditor(group, user.ToString(), fireState)
-               + Environment.NewLine
-               + PhraseProcessor.BannedEditor(group, user.ToString(), banState);
-    }
 
     [HttpPost]
     public IActionResult Callback([FromBody] Event vkEvent)
@@ -77,10 +57,13 @@ public class WatchdogController : ControllerBase
         _logger.LogInformation("Сообщество: {Group}\n\tТип: {Type}",
             vkEvent.GroupId, vkEvent.Type);
 
-        string? secret;
+        string secret;
+        string confirm;
         try
         {
-            secret = Configuration[$"{vkEvent.GroupId}:Secret"];
+            var targetGroup = _groupSecrets.Collection.ToList().First(x => x.GroupId.Equals(vkEvent.GroupId));
+            secret = targetGroup.Secret;
+            confirm = targetGroup.Confirm;
         }
         catch (Exception e)
         {
@@ -100,22 +83,25 @@ public class WatchdogController : ControllerBase
         if (vkEvent.Type == "confirmation")
         {
             var group = vkEvent.GroupId;
-            var token = Configuration.GetSection($"{group}:Confirm").Value;
-            _logger.LogInformation("Пришел запрос на подтверждение сервера в сообществе {GroupId}" +
-                                   "\nВозвращаем {Token}", group, token);
-            return Ok(token);
-        }
 
-        Task.Run(() =>
-        {
             try
             {
-                ProcessEvent(vkEvent);
+                _logger.LogInformation("Пришел запрос на подтверждение сервера в сообществе {GroupId}" +
+                                       "\nВозвращаем {Token}", group, confirm);
+                return Ok(confirm);
             }
             catch (Exception e)
             {
                 SentrySdk.CaptureException(e);
+                _logger.LogError("Не удалось получить конфирм для группы {GroupId}", group);
+                return Ok("ok");
             }
+        }
+
+        Task.Run(() => { ProcessEvent(vkEvent); }).ContinueWith(task =>
+        {
+            if (task is {IsFaulted: true, Exception: { }})
+                SentrySdk.CaptureException(task.Exception);
         });
 
         return Ok("ok");
@@ -131,8 +117,7 @@ public class WatchdogController : ControllerBase
 
             case "wall_repost":
             case "wall_post_new":
-                // TODO: issue #16
-                ProcessWallTemp(vkEvent);
+                ProcessWall(vkEvent);
                 break;
 
             case "user_block":
@@ -161,37 +146,36 @@ public class WatchdogController : ControllerBase
     {
         var group = vkEvent.GroupId;
         var photo = Photo.FromJson(new VkResponse(vkEvent.Object));
-        if (photo.UserId == null || photo.UserId == VkApi.UserId) return;
-        if (OperationAllowed(group, (long) photo.UserId)) return;
+        if (photo.UserId == null || photo.UserId == ManagerApi.VkFramework.CurrentUser.Id) return;
+        var admin = (long) photo.UserId;
+        if (ManagerApi.HasPermission(admin, group) || _usersHelper.IsAdmin(admin)) return;
 
-        var response = PhraseProcessor.PhotoNew(group, photo.OwnerId.ToString() ?? throw new NullReferenceException());
+        ManagerApi.ProcessPhoto(group, admin);
+        _usersHelper.BanUser(admin, group, BanPriority.Orange);
+
+        var response = PhraseProcessor.PhotoNew(group, admin.ToString() ?? throw new NullReferenceException());
 
         WatchDog.SendMessage(response);
     }
 
-    [Obsolete("Будем использовать после того, как ВК пофиксит стену (issue #16)", true)]
     private void ProcessWall(Event vkEvent)
     {
         var group = vkEvent.GroupId;
         var post = Post.FromJson(new VkResponse(vkEvent.Object));
-        if (post.CreatedBy == null || post.Id == null || post.CreatedBy == VkApi.UserId) return;
-        if (OperationAllowed(group, (long) post.CreatedBy)) return;
-        var response = PhraseProcessor.WallPost(group, post.CreatedBy.ToString() ?? throw new NullReferenceException());
+        if (post.CreatedBy == null || post.Id == null ||
+            post.CreatedBy == ManagerApi.VkFramework.CurrentUser.Id) return;
+        var admin = (long) post.CreatedBy;
+        if (ManagerApi.HasPermission(admin, group) || _usersHelper.IsAdmin(admin)) return;
+        var response = PhraseProcessor.WallPost(group, admin.ToString());
 
-        ManagerApi.WallProcessor(group, true);
-        ManagerApi.DeletePost(group, post.Id);
-        ManagerApi.WallProcessor(group, false);
+        ManagerApi.ProcessPost(group, (long) post.Id);
 
-        response += Environment.NewLine;
-        response += FireEditorWithResponse(group, (long) post.CreatedBy);
+        ManagerApi.BanEditor(admin, group, _settings.BanComment);
 
-        WatchDog.SendMessage(response);
-    }
+        _usersHelper.BanUser(admin, group, BanPriority.Green);
 
-    private void ProcessWallTemp(Event vkEvent)
-    {
-        var group = vkEvent.GroupId;
-        var response = PhraseProcessor.WallPostTemp(group);
+        response += $"\n{PhraseProcessor.BannedEditor(group, admin.ToString(), true)}";
+
         WatchDog.SendMessage(response);
     }
 
@@ -199,14 +183,20 @@ public class WatchdogController : ControllerBase
     {
         var group = vkEvent.GroupId;
         var block = UserBlock.FromJson(new VkResponse(vkEvent.Object));
-        if (block.UserId == null || block.AdminId == null || block.AdminId == VkApi.UserId) return;
-        if (OperationAllowed(group, (long) block.AdminId)) return;
+        if (block.UserId is null || block.AdminId is null ||
+            block.AdminId.Equals(ManagerApi.VkFramework.CurrentUser.Id)) return;
+        var admin = (long) block.AdminId;
+        var banned = (long) block.UserId;
+        if (ManagerApi.HasPermission(admin, group) || _usersHelper.IsAdmin(admin)) return;
 
-        var response = PhraseProcessor.UserBlock(group, block.AdminId.ToString()!, block.UserId.ToString()!,
-            block.Comment);
+        var response = PhraseProcessor.UserBlock(group, admin.ToString(), banned.ToString(), block.Comment);
+        response += $"\n{PhraseProcessor.BannedEditor(group, admin.ToString(), true)}";
+        response += $"\n{PhraseProcessor.BannedEditor(group, banned.ToString(), true)}";
 
-        response += Environment.NewLine;
-        response += FireEditorWithResponse(group, (long) block.AdminId);
+        ManagerApi.BanEditor(admin, group, _settings.BanComment);
+        ManagerApi.BanEditor(banned, group, _settings.BanComment);
+
+        _usersHelper.BanUser(admin, group, BanPriority.Red);
 
         WatchDog.SendMessage(response);
     }
@@ -215,27 +205,24 @@ public class WatchdogController : ControllerBase
     {
         var group = vkEvent.GroupId;
         var unblock = UserUnblock.FromJson(new VkResponse(vkEvent.Object));
+
         if (unblock.UserId == null || unblock.AdminId == null ||
-            Equals(unblock.AdminId, VkApi.UserId)) return;
-        if (OperationAllowed(group, (long) unblock.AdminId)) return;
-        if (unblock.ByEndDate is true)
-        {
-            var user = (long) unblock.UserId;
-            var dateTimeResponse = PhraseProcessor.UserDateTime(group, user.ToString());
-            ManagerApi.Block(group, user, EnvironmentHelper.GetString("BanComment"));
-            dateTimeResponse += PhraseProcessor.BannedAgain(group, user.ToString());
-            WatchDog.SendMessage(dateTimeResponse);
-            return;
-        }
+            Equals(unblock.AdminId, ManagerApi.VkFramework.CurrentUser.Id)) return;
 
-        var response = PhraseProcessor.UserUnblock(group, unblock.AdminId.ToString()!, unblock.UserId.ToString()!);
+        var admin = (long) unblock.AdminId;
+        var user = (long) unblock.UserId;
 
-        response += Environment.NewLine +
-                    FireEditorWithResponse(group, (long) unblock.AdminId);
+        if (ManagerApi.HasPermission(admin, group) || _usersHelper.IsAdmin(admin)) return;
 
-        ManagerApi.Block(group, (long) unblock.UserId, EnvironmentHelper.GetString("BanComment"));
+        var response = PhraseProcessor.UserUnblock(group, admin.ToString(), user.ToString());
 
-        response += Environment.NewLine + PhraseProcessor.BannedAgain(group, unblock.UserId.ToString()!);
+        ManagerApi.ProcessUnblock(unblock, group, _settings.BanComment);
+
+        _usersHelper.BanUser(admin, group, BanPriority.Red);
+
+        response +=
+            $"\n{PhraseProcessor.BannedEditor(group, admin.ToString(), true)}" +
+            $"\n{PhraseProcessor.BannedAgain(group, user.ToString())}";
 
         WatchDog.SendMessage(response);
     }
@@ -243,9 +230,12 @@ public class WatchdogController : ControllerBase
     private void ProcessGroupLeave(Event vkEvent)
     {
         var leave = GroupLeave.FromJson(new VkResponse(vkEvent.Object));
-        if (leave.UserId == null || leave.IsSelf == null || (bool) leave.IsSelf || leave.UserId == VkApi.UserId)
-            return;
+
+        if (leave.UserId == null || leave.IsSelf == null || (bool) leave.IsSelf ||
+            leave.UserId == ManagerApi.VkFramework.CurrentUser.Id) return;
+
         var response = PhraseProcessor.GroupLeave(vkEvent.GroupId, leave.UserId.ToString()!);
+
         WatchDog.SendMessage(response);
     }
 
@@ -253,26 +243,21 @@ public class WatchdogController : ControllerBase
     {
         var group = vkEvent.GroupId;
         var groupChangePhoto = GroupChangePhoto.FromJson(new VkResponse(vkEvent.Object));
-        if (groupChangePhoto.UserId == null || groupChangePhoto.Photo?.Id == null ||
-            groupChangePhoto.UserId.Equals(VkApi.UserId))
+        if (groupChangePhoto.UserId == null || groupChangePhoto.UserId.Equals(ManagerApi.VkFramework.CurrentUser.Id))
             return;
-        var photo = (ulong) groupChangePhoto.Photo.Id;
         var userId = (long) groupChangePhoto.UserId;
-
-        if (OperationAllowed(group, userId)) return;
+        if (ManagerApi.HasPermission(userId, group) || _usersHelper.IsAdmin(userId)) return;
 
         var response = PhraseProcessor.ChangePhoto(group, userId.ToString());
 
-        response += Environment.NewLine +
-                    FireEditorWithResponse(group, (long) groupChangePhoto.UserId);
+        ManagerApi.BanEditor(userId, group, _settings.BanComment);
+        ManagerApi.ProcessChangePhoto(group);
+        _photoHelper.SetAvatar(group);
+        _usersHelper.BanUser(userId, group, BanPriority.Orange);
 
-        var photos = ManagerApi.GetPhotos(-group, PhotoAlbumType.Profile);
-
-        if (photos.Any(x => x.Id == (long?) photo))
-        {
-            ManagerApi.DeletePhoto(photo, -group);
-            response += Environment.NewLine + PhraseProcessor.PhotoWasDeleted(group, userId.ToString());
-        }
+        response += $"\n{PhraseProcessor.BannedEditor(group, userId.ToString(), true)}" +
+                    $"\n{PhraseProcessor.PhotoWasDeleted(group, userId.ToString())}" +
+                    $"\n{PhraseProcessor.PhotoUploaded(group)}";
 
         WatchDog.SendMessage(response);
     }

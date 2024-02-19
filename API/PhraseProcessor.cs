@@ -47,17 +47,9 @@ public static class PhraseProcessor
             .SetUser(user);
     }
 
-    public static string WallPostTemp(long group)
+    public static string PhotoUploaded(long group)
     {
-        return Phrases.WallPostTemp
-            .SetGroup(group.ToString());
-    }
-
-    public static string FiredEditor(long group, string user, bool state)
-    {
-        return (state ? Phrases.FiredEditor : Phrases.CannotFireEditor)
-            .SetUser(user)
-            .SetGroup(group.ToString());
+        return Phrases.PhotoUploaded.SetGroup(group.ToString());
     }
 
     public static string GroupLeave(long group, string user)
@@ -74,16 +66,9 @@ public static class PhraseProcessor
             .SetBanned(user);
     }
 
-    public static string BannedEditor(long group, string user, bool state)
+    public static string BannedEditor(long group, string user, bool success)
     {
-        return (state ? Phrases.BannedEditor : Phrases.CannotBanEditor)
-            .SetGroup(group.ToString())
-            .SetUser(user);
-    }
-
-    public static string UserDateTime(long group, string user)
-    {
-        return Phrases.UserDateTime
+        return (success ? Phrases.BannedEditor : Phrases.CannotBanEditor)
             .SetGroup(group.ToString())
             .SetUser(user);
     }
